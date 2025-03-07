@@ -1,27 +1,26 @@
 #!/bin/bash
 
-set -e  # Hentikan script jika terjadi error
+set -e  # Stop jika ada error
 
-echo "Updating system and installing dependencies..."
-sudo apt update && sudo apt install -y apt-transport-https ca-certificates curl gnupg2 software-properties-common
-
-echo "Creating keyring directory..."
+# Update & Install Dependencies
+sudo apt update && sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+sudo apt-add-repository main
+# Buat Direktori Keyrings
 sudo mkdir -p -m 755 /etc/apt/keyrings
 
-echo "Adding Kubernetes repository key..."
+# Tambahkan Kubernetes Repo
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-
-echo "Adding Kubernetes APT repository..."
 echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.26/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt update
 
-echo "Installing Kubernetes components..."
-sudo apt update && sudo apt install -y kubelet=1.26.11-1.1 kubeadm=1.26.11-1.1 kubectl=1.26.11-1.1
+# Install Kubernetes Components
+sudo apt install -y kubelet=1.26.11-1.1 kubeadm=1.26.11-1.1 kubectl=1.26.11-1.1
 
-echo "Disabling swap..."
+# Disable Swap
 sudo swapoff -a
 sudo sed -i '/ swap / s/^/#/' /etc/fstab
 
-echo "Loading kernel modules..."
+# Load Kernel Modules
 cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
 overlay
 br_netfilter
@@ -30,7 +29,7 @@ EOF
 sudo modprobe overlay
 sudo modprobe br_netfilter
 
-echo "Configuring sysctl for Kubernetes networking..."
+# Set sysctl for Kubernetes
 cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
 net.bridge.bridge-nf-call-iptables  = 1
 net.ipv4.ip_forward                 = 1
@@ -39,15 +38,29 @@ EOF
 
 sudo sysctl --system
 
-echo "Adding Docker repository key..."
+# Tambahkan Docker Repository
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/docker.gpg
-
-echo "Adding Docker APT repository..."
 sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
 
-echo "Downloading and configuring containerd..."
-wget https://github.com/containerd/containerd/releases/download/v1.7.13/containerd-1.7.13-linux-amd64.tar.gz
+# Download dan Install Containerd
+CONTAINERD_VERSION="1.7.13"
+wget https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-amd64.tar.gz
+
+# Ekstrak & Pindahkan Containerd ke /usr/local/bin
+tar -xzf containerd-${CONTAINERD_VERSION}-linux-amd64.tar.gz
+sudo cp bin/* /usr/local/bin
+rm -f containerd-${CONTAINERD_VERSION}-linux-amd64.tar.gz  # Hapus file tar setelah ekstraksi
+
+# Buat Direktori Config
 sudo mkdir -p /etc/containerd
 containerd config default | sudo tee /etc/containerd/config.toml
 
-echo "Provisioning complete!"
+# Download dan Install Service Systemd untuk Containerd
+wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+sudo mv containerd.service /etc/systemd/system/
+
+# Reload systemd, enable, dan start containerd
+sudo systemctl daemon-reload
+sudo systemctl enable --now containerd
+
+echo "Installation Completed Successfully!"
