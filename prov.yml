@@ -1,0 +1,117 @@
+---
+- name: Provision Kubernetes Cluster
+  hosts: all
+  become: true
+  tasks:
+
+    - name: Disable swap
+      command: swapoff -a
+      args:
+        warn: false
+
+    - name: Remove swap entry from /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\sswap\s.*)$'
+        replace: '# \1'
+
+    - name: Load required kernel modules
+      copy:
+        dest: /etc/modules-load.d/containerd.conf
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Apply kernel modules
+      shell: |
+        modprobe overlay
+        modprobe br_netfilter
+
+    - name: Set sysctl parameters for Kubernetes
+      copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.ipv4.ip_forward                 = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+
+    - name: Apply sysctl changes
+      command: sysctl --system
+
+    - name: Install dependencies
+      apt:
+        name:
+          - curl
+          - gnupg2
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      shell: curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/docker.gpg
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+        state: present
+
+    - name: Install containerd
+      shell: |
+        wget https://github.com/containerd/containerd/releases/download/v1.7.13/containerd-1.7.13-linux-amd64.tar.gz
+        tar Cxzvf /usr/local containerd-1.7.13-linux-amd64.tar.gz
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: Generate default containerd configuration
+      shell: containerd config default | tee /etc/containerd/config.toml
+
+    - name: Add Kubernetes GPG key
+      shell: |
+        mkdir -p -m 755 /etc/apt/keyrings
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      shell: |
+        echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.26/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+
+    - name: Install Kubernetes components
+      apt:
+        name:
+          - kubelet=1.26.11-1.1
+          - kubeadm=1.26.11-1.1
+          - kubectl=1.26.11-1.1
+        state: present
+        update_cache: yes
+
+    - name: Enable and start kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+
+- name: Initialize Kubernetes Master Node
+  hosts: k8s-master1
+  become: true
+  tasks:
+
+    - name: Initialize Kubernetes Cluster
+      command: kubeadm init --pod-network-cidr=192.168.0.0/16
+      register: kubeadm_init_result
+
+    - name: Copy kubeconfig to user home
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: yes
+        owner: kevin
+        group: kevin
+        mode: '0644'
+
+    - name: Install Calico Network Plugin
+      shell: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+      become_user: kevin
